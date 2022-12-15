@@ -3,3 +3,4 @@ content/
 .DS_Store
 *.pt
 log
+*tif
