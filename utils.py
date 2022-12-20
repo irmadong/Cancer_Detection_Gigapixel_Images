@@ -1,4 +1,4 @@
-#%matplotlib inline
+# %matplotlib inline
 import matplotlib.pyplot as plt
 import numpy as np
 from openslide import open_slide, __library_version__ as openslide_version
@@ -75,7 +75,7 @@ def generate_raw_patch(slide_paths, level, stride=150, window_len=299):
                 slide_level0_coord.append(level0_coord)
 
     return slide_windows, slide_coord, slide_level0_coord
-  
+
 
 
 def make_prediction(model, slide_windows, slide_coord, wid, height, window_len = 299,
@@ -85,20 +85,27 @@ def make_prediction(model, slide_windows, slide_coord, wid, height, window_len =
     
     final_output = np.zeros([wid, height])#todo: which dimension? 
     #turn into batchsize 
-    pred = model.predict(slide_windows)
-    pred = np.argmax(pred, axis=1) 
-    
+        
     fill_1 = np.ones([window_len, window_len])
     fill_0 = np.zeros([window_len, window_len])
     
-    for i in range(len(slide_coord)):
-        x_left = slide_coord[i][0] #to do :check is it correct or need to swap? 
-        y_left = slide_coord[i][1]
-        if pred[i] == 1:
-            final_output[x_left: x_left + window_len, y_left : y_left + window_len] = fill_1
+    for i in range(0, len(slide_windows), 100):
+        temp = slide_windows[i:i+100]
+        temp_coord = slide_coord[i:i+100]
+        temp = np.array(temp)
+    
+        pred = model.predict(temp)
+        pred = np.argmax(pred, axis=1) 
+        for i in range(len(temp_coord)):
+            x_left = slide_coord[i][0] #to do :check is it correct or need to swap? 
+            y_left = slide_coord[i][1]
+            if pred[i] == 1:
+                final_output[x_left: x_left + window_len, y_left : y_left + window_len] = fill_1
 
             #print("current coord is ",slide_coord[i] )
 #         else:
 #              final_output[x_left: x_left + window_len, y_left : y_left + window_len] = fill_0
     return final_output
-    
+
+
+
