@@ -11,33 +11,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import PIL
 import tensorflow as tf
+from keras.models import Model, load_model, Sequential
+from keras.layers import Dense,Flatten, Dropout, Conv2D, BatchNormalization, Activation, MaxPooling2D, concatenate
+from keras.applications.inception_v3 import InceptionV3
+from keras.optimizers import RMSprop
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.models import Sequential
-
-def display_windows(images, row, col, x, y):
-  fig = plt.figure(figsize=(x,y))
-  shuffle = np.arange(len(images))
-  np.random.shuffle(shuffle)
-  for i in range(row):
-    for j in range(col):
-      idx = i*row+j
-      ax = fig.add_subplot(col, row, idx+1)
-      plt.imshow(images[shuffle[idx]])
-      ax.axes.get_xaxis().set_visible(False)
-      ax.axes.get_yaxis().set_visible(False)
-# As mentioned in class, we can improve efficiency by ignoring non-tissue areas 
-# of the slide. We'll find these by looking for all gray regions.
-def find_tissue_pixels(image, intensity=0.8):
-    im_gray = rgb2gray(image)
-    assert im_gray.shape == (image.shape[0], image.shape[1])
-    indices = np.where(im_gray <= intensity)
-    return list(zip(indices[0], indices[1]))
-def apply_mask(im, mask, color=(255,0,0)):
-    masked = np.copy(im)
-    for x,y in mask: masked[x][y] = color
-    return masked
 
 
 # Read a region from the slide
@@ -52,204 +34,110 @@ def read_slide(slide, x, y, level, width, height, as_float=False):
     assert im.shape == (height, width, 3)
     return im
 
+# +
 
-def get_patches(slide_path, tumor_mask_path, 
-                    lvl1, lvl2, window_size, 
-                    tumor_sampled_limit, healthy_sampled_limit):
-    """
-    Return the patchs for two levels and their labels
 
-    slide_path: Path to the slide.
-    tumor_mask_path: Path to the tumor mask slide
-    lvl1 and lvl2: Levels of the slide
-    window_size: Sliding Window size
-    tumor_sampled_limit: Number of Tumorous patches to return per slide per level
-    healthy_sampled_limit: Number of Healthy patches to return per slide per level
-    """
-        
-  patch_images_1 = []
-  patch_images_2 = []
-  
-  patch_labels = []
-  
-  num_cancer = 0
-  num_health = 0
- 
-  reference_lvl = 4
+# Find non-tissue areas by looking for all gray regions.
+def find_tissue_pixels(image, intensity=0.8):
+    im_gray = rgb2gray(image)
+    assert im_gray.shape == (image.shape[0], image.shape[1])
+    indices = np.where(im_gray <= intensity)
+    return list(zip(indices[0], indices[1]))
 
-  slide = open_slide(slide_path)
-  print ("Read WSI from %s with width: %d, height: %d" % (slide_path, slide.level_dimensions[0][0], slide.level_dimensions[0][1]))
 
-  tumor_mask = open_slide(tumor_mask_path)
-  print ("Read tumor mask from %s" % (tumor_mask_path))
-  
-  slide_image = read_slide(slide, 
-                         x=0, 
-                         y=0, 
-                         level=reference_lvl, 
-                         width=slide.level_dimensions[reference_lvl][0], 
-                         height=slide.level_dimensions[reference_lvl][1])
-  
-  tumor_mask_image = read_slide(tumor_mask, 
-                         x=0, 
-                         y=0, 
-                         level=reference_lvl, 
-                         width=slide.level_dimensions[reference_lvl][0], 
-                         height=slide.level_dimensions[reference_lvl][1])
-  
-  tumor_mask_image = tumor_mask_image[:,:,0]
-  
-  #Get a list of tumor pixels at reference level
-  list_tumor_mask_pixels = np.nonzero(tumor_mask_image)
-  
-  #Construct a healthy tissue mask by subtracting tumor mask from tissue mask
-  tissue_pixels = find_tissue_pixels(slide_image)
-  tissue_regions = apply_mask(slide_image, tissue_pixels)
+# -
 
-  healthy_mask_image = tissue_regions[:,:,0] - tumor_mask_image
-  healthy_mask_image = healthy_mask_image > 0
-  healthy_mask_image = healthy_mask_image.astype('int')
+def apply_mask(im, mask, color=(255,0,0)):
+    masked = np.copy(im)
+    for x,y in mask: masked[x][y] = color
+    return masked
 
-  #Get a list of healthy tissue pixels at reference level
-  list_healthy_mask_pixels = np.nonzero(healthy_mask_image)
-  
-  #Collect tumor patches
-  tumor_pixels = random.sample(list(zip(list_tumor_mask_pixels[1], list_tumor_mask_pixels[0])), tumor_sampled_limit * 10)
-  
-  count = 0
-  for pixel in tumor_pixels:
-    if count >= tumor_sampled_limit:
-      break
-      
-    (x_ref, y_ref) = pixel
+def check_center_region(patch, center_size):
+    start = int(299//2)
+    mid = int(center_size //2)
+    return np.sum(patch[start-mid: start + mid, start-mid: start + mid])>=1
 
-    #Convert reference_lvl coordinates to level 0 coordinates
-    x0 = x_ref*(2**reference_lvl)
-    y0 = y_ref*(2**reference_lvl)
     
-    downsample_factor = 2**lvl1
-    
-    patch = read_slide(slide,
-                       x = x0-(window_size//2)*downsample_factor,
-                       y = y0-(window_size//2)*downsample_factor, 
-                       level = lvl1,
-                       width = window_size,
-                       height = window_size)
-    
-    tumor_mask_patch = read_slide(tumor_mask,
-                       x = x0-(window_size//2)*downsample_factor,
-                       y = y0-(window_size//2)*downsample_factor, 
-                       level = lvl1,
-                       width = window_size,
-                       height = window_size)
-    
-    tumor_mask_patch = tumor_mask_patch[:,:,0]
-    
-    tissue_pixels = find_tissue_pixels(patch)
-    tissue_pixels = list(tissue_pixels)
-    percent_tissue = len(tissue_pixels) / float(patch.shape[0] * patch.shape[0]) * 100
 
-    if percent_tissue > 50 and check_patch_centre(tumor_mask_patch, 128):
-        patch_images_1.append(patch)
-        patch_images_2.append(read_slide(slide, x = x0-(window_size//2)*downsample_factor, y = y0-(window_size//2)*downsample_factor, level = lvl2, width = window_size, height = window_size))
+# get windows on
+def get_windows(slide_path, tumor_mask_path, levels, stride=150, window_len=299):
+    slide_windows1 = []
+    slide_windows2 = []
+    window_labels = []
 
-        patch_labels.append(1)
-        count += 1
-        
-
-        
-  #Collect healthy patches
-  healthy_pixels = random.sample(list(zip(list_healthy_mask_pixels[1], list_healthy_mask_pixels[0])), healthy_sampled_limit * 20)
-  
-  count = 0
-  for pixel in healthy_pixels:
-    if count >= healthy_sampled_limit:
-      break
-      
-    (x_ref, y_ref) = pixel
-
-    #Convert reference_lvl coordinates to level 0 coordinates
-    x0 = x_ref*(2**reference_lvl)
-    y0 = y_ref*(2**reference_lvl)
-    
-    downsample_factor = 2**lvl1
-    
-    patch = read_slide(slide,
-                       x = x0-(window_size//2)*downsample_factor,
-                       y = y0-(window_size//2)*downsample_factor, 
-                       level = lvl1,
-                       width = window_size,
-                       height = window_size)
-    
-    tumor_mask_patch = read_slide(tumor_mask,
-                       x = x0-(window_size//2)*downsample_factor,
-                       y = y0-(window_size//2)*downsample_factor, 
-                       level = lvl1,
-                       width = window_size,
-                       height = window_size)
-    
-    tumor_mask_patch = tumor_mask_patch[:,:,0]
-    
-    tissue_pixels = find_tissue_pixels(patch)
-    tissue_pixels = list(tissue_pixels)
-    percent_tissue = len(tissue_pixels) / float(patch.shape[0] * patch.shape[0]) * 100
-
-    if percent_tissue > 50 and (not check_patch_centre(tumor_mask_patch, 128)):
-        patch_images_1.append(patch)
-        patch_images_2.append(read_slide(slide, x = x0-(window_size//2)*downsample_factor, y = y0-(window_size//2)*downsample_factor, level = lvl2, width = window_size, height = window_size))
-        patch_labels.append(0)
-        count += 1
-
-  return patch_images_1, patch_images_2, patch_labels
-
-
-# get all non-tissue windows test version 
-def get_windows(slide_paths, tumor_mask_paths, level, level2,  stride = 150, window_len=299):
-  slide_windows = []
-  contains_cancer = []
-
-  for slide_path, tumor_mask_path in zip(slide_paths, tumor_mask_paths):
     slide = open_slide(slide_path)
     tumor_mask = open_slide(tumor_mask_path)
+    level1, level2 = levels[0], levels[1]
 
-    window_width = slide.level_dimensions[level][0] - window_len + 1 
-    window_height = slide.level_dimensions[level][1] - window_len + 1
-    downsample_factor = slide.level_downsamples[level]
+    window_width = slide.level_dimensions[level1][0] - window_len + 1 
+    window_height = slide.level_dimensions[level1][1] - window_len + 1
+    downsample_factor1 = slide.level_downsamples[level1]
+    downsample_factor2 = slide.level_downsamples[level2]
     
     # sliding window
-    for w in range(0, window_width, stride):
-      for h in range(0, window_height, stride):
-        curr_coord = (int(w*downsample_factor), int(h*downsample_factor))
+    for w in range(0, window_height, stride):
+        for h in range(0, window_width, stride):
+            curr_coord = (int(w*downsample_factor1), int(h*downsample_factor1))
+            center_coord = (int((w+window_len//2)*downsample_factor1), int((h+window_len//2)*downsample_factor1))
 
-        curr_slide = read_slide(slide,
-                                 x=curr_coord[0],
-                                 y=curr_coord[1],
-                                 level=level,
-                                 width=window_len,
-                                 height=window_len)
-        
-        curr_tumor_mask = read_slide(tumor_mask,
-                                      x=curr_coord[0],
-                                      y=curr_coord[1],
-                                      level=level,
-                                      width=window_len,
-                                      height=window_len)
-        
-        # calculate the percentage of tissue
-        tissue_pixels = find_tissue_pixels(curr_slide)
-        #print(tissue_pixels)
-        percent_tissue = len(tissue_pixels) / float(curr_slide.shape[0] * curr_slide.shape[0] ) 
+            slide_image = read_slide(slide,
+                                     x=curr_coord[0],
+                                     y=curr_coord[1],
+                                     level=level1,
+                                     width=window_len,
+                                     height=window_len)
+
+            tumor_mask_image = read_slide(tumor_mask,
+                                          x=curr_coord[0],
+                                          y=curr_coord[1],
+                                          level=level1,
+                                          width=window_len,
+                                          height=window_len)
+
+            # calculate the percentage of tissue
+            tissue_pixels = find_tissue_pixels(slide_image)
+            #print(tissue_pixels)
+            percent_tissue = len(tissue_pixels) / float(slide_image.shape[0] * slide_image.shape[0] ) 
         #print("curr_slide shape", curr_slide.shape[0])) 
         #print("curr_slide shape", curr_slide.shape[0])
 
-        if percent_tissue >= 0.2 and np.mean(curr_slide) > 0.2:
-          slide_windows.append(curr_slide)
-          if np.sum(curr_tumor_mask[:,:,0]) / (window_len * window_len)  >= threshold:
-            contains_cancer.append(1)
-          else:
-            contains_cancer.append(0)
 
-  return slide_windows, contains_cancer
+
+            if percent_tissue >= 0.5 and np.mean(slide_image) > 0.2:
+                slide_windows1.append(slide_image)
+
+                slide_windows2.append(read_slide(slide,
+                                                 x = int(center_coord[0] //(2**(level2-level1)) - (window_len//2)*downsample_factor2), 
+                                                 y = int(center_coord[1] //(2**(level2-level1)) - (window_len//2)*downsample_factor2), 
+                                                 level = level2, 
+                                                 width = window_len, 
+                                                 height = window_len
+                                                ))
+                if check_center_region(slide_image, 128):
+                    #if the center has tumor --> 1 
+                    window_labels.append(1)
+                else:
+                    window_labels.append(0)
+
+    #             if np.sum(tumor_mask_image[:,:,0]) / (window_len * window_len) >= threshold:
+    #                 window_labels.append(1)
+    #             else:
+    #                 window_labels.append(0)
+
+    return slide_windows1, slide_windows2, window_labels    
+
+
+def display_windows(images, row, col, x, y):
+  fig = plt.figure(figsize=(x,y))
+  shuffle = np.arange(len(images))
+  np.random.shuffle(shuffle)
+  for i in range(row):
+    for j in range(col):
+      idx = i*row+j
+      ax = fig.add_subplot(col, row, idx+1)
+      plt.imshow(images[shuffle[idx]])
+      ax.axes.get_xaxis().set_visible(False)
+      ax.axes.get_yaxis().set_visible(False)
 
 
 # def get_windows(slide_paths, tumor_mask_paths, level, stride = 150, window_len=299, threshold = 0.5):
@@ -287,7 +175,6 @@ def generate_raw_patch(slide_paths, level, stride=150, window_len=299):
     return slide_windows, slide_coord, slide_level0_coord
 
 
-
 def make_prediction(model, slide_windows, slide_coord, wid, height, window_len = 299,
                     stride = 150):
     #maybe stride not needed?
@@ -318,4 +205,88 @@ def make_prediction(model, slide_windows, slide_coord, wid, height, window_len =
     return final_output
 
 
+def shuffle_data(arr,arr2, label):
+    w_tumor = [arr[i] for i in range(len(arr)) if label[i]==1]
+    w_tumor2 = [arr2[i] for i in range(len(arr2)) if label[i]==1]
+    wo_tumor = [arr[i] for i in range(len(arr)) if label[i]==0]
+    wo_tumor2 = [arr2[i] for i in range(len(arr2)) if label[i]==0]
+    
+    
+    shuffle_idx = np.arange(len(w_tumor))
+    np.random.shuffle(shuffle_idx)
+    
+    w_tumor = [w_tumor[shuffle_idx[i]] for i in shuffle_idx[:len(wo_tumor)]]
+    w_tumor2 = [w_tumor2[shuffle_idx[i]] for i in shuffle_idx[:len(wo_tumor)]]
+    
+    return w_tumor, w_tumor2, wo_tumor, wo_tumor2
 
+
+def preprocess(x):
+
+    x = x.astype("float32")
+    x /= 255.
+    x -= 0.5
+    x *= 2.
+    return x
+
+
+def create_tf_dataset(X_train1, X_train2, y_train1):
+    train_ds_1 = tf.data.Dataset.from_tensor_slices(X_train1)
+    #image_ds_1 = train_ds_1.map(preprocess)
+
+    train_ds_2 = tf.data.Dataset.from_tensor_slices(X_train2)
+    #image_ds_2 = train_ds_2.map(preprocess)
+    
+    label_ds = tf.data.Dataset.from_tensor_slices(tf.cast(y_train1, tf.int64))
+
+    image_ds = tf.data.Dataset.zip(((train_ds_1,train_ds_2), label_ds))
+
+
+    BATCH_SIZE = 16
+    final_ds = image_ds.repeat()
+    
+    final_ds = final_ds.shuffle(buffer_size=3000)
+    final_ds = final_ds.batch(BATCH_SIZE)
+    
+    final_ds = final_ds.prefetch(1)
+
+    return final_ds
+
+
+## Imagenet bases using model subclassing
+class multi_level_inception(tf.keras.Model):
+
+    def __init__(self):
+        super(multi_level_inception, self).__init__(name='multi_level_inception')
+
+        #conv_base = InceptionV3(weights='imagenet', include_top=False, input_shape=(299, 299, 3))
+        #conv_base.trainable = True
+
+        self.model1 = InceptionV3(weights='imagenet', include_top=False, input_shape=(299, 299, 3))
+        self.model1.trainable = True
+        self.flatten1  = Flatten()
+
+        self.model2 = InceptionV3(weights='imagenet', include_top=False, input_shape=(299, 299, 3))
+        self.model2.trainable = True
+        self.flatten2 = Flatten()
+
+        self.concate_layer = Dense(128, activation='relu')
+        self.dropout = Dropout(0.5)
+        self.last = Dense(1, activation='sigmoid')
+
+    def call(self, x):
+        x1, x2= x[0], x[1]
+
+        x1 = self.model1(x1)
+        x1 = self.flatten1 (x1)
+
+        x2 = self.model2(x2)
+        x2 = self.flatten2(x2)
+    
+
+        x = tf.concat([x1, x2], 1)
+        x = self.concate_layer(x)
+        x = self.dropout(x)
+        x = self.last(x)
+
+        return x
