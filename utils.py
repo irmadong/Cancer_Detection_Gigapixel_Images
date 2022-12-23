@@ -17,6 +17,7 @@ from keras.applications.inception_v3 import InceptionV3
 from tensorflow.keras.applications.resnet import ResNet50
 from keras.optimizers import RMSprop
 from keras.callbacks import EarlyStopping, ModelCheckpoint
+from sklearn import metrics
 # import tensorflow.keras.applications.resnet50
 # from keras.applications.resnet50 import ResNet50
 
@@ -83,8 +84,8 @@ def get_windows(slide_path, tumor_mask_path, levels, stride=150, window_len=299)
     downsample_factor2 = slide.level_downsamples[level2]
     
     # sliding window
-    for w in range(0, window_height, stride):
-        for h in range(0, window_width, stride):
+    for w in range(0, window_width, stride):
+        for h in range(0, window_height, stride):
             curr_coord = (int(w*downsample_factor1), int(h*downsample_factor1))
             center_coord = (int((w+window_len//2)*downsample_factor1), int((h+window_len//2)*downsample_factor1))
 
@@ -150,8 +151,8 @@ def get_test_windows(slide_path, tumor_mask_path, levels, stride=299, window_len
     downsample_factor2 = slide.level_downsamples[level2]
     
     # sliding window
-    for w in range(0, window_height, stride):
-        for h in range(0, window_width, stride):
+    for w in range(0, window_width, stride):
+        for h in range(0, window_height, stride):
             curr_coord = (int(w*downsample_factor1), int(h*downsample_factor1))
             center_coord = (int((w+window_len//2)*downsample_factor1), int((h+window_len//2)*downsample_factor1))
 
@@ -315,7 +316,7 @@ def cut_data(arr, arr2, label, size = 1250):
     
     
     return w_tumor, w_tumor2, wo_tumor, wo_tumor2
-    
+
 
 # +
 # def data_reduction(train1, train2,  test1, test2, train_limit=2000, test_limit=500):
@@ -498,16 +499,54 @@ def generate_heat_map(model, pred, coord, heatmap, threshold = 0.5):
     for i in range(len(coord)):
         
         w,h = coord[i]
-        midh = h + 299//2
-        midw = w+299//2
+#         midh = h + 299//2
+#         midw = w+299//2
         if pred[i] > threshold: 
-            heatmap[int(midh - 64):(midh+64), (midw - 64): (midw + 64)] = 1 #check 
+            #heatmap[int(midh - 64):(midh+64), (midw - 64): (midw + 64)] = 1 #check 
+            heatmap[int(h):int(h+299), int(w):int(w+299)] = 1 
             class_pred.append(1)
         else:
             #heatmap[int(midh - 64):(midh+64), (midw - 64): (midw + 64)] = 0 #check
             class_pred.append(0)
     return class_pred
-    
+
+
+def evaluate(label, class_pred, label_name):
+    fpr, tpr, thresholds = metrics.roc_curve(label, class_pred)
+    #print(metrics.auc(fpr, tpr))
+    acc = metrics.accuracy_score(label, class_pred)
+    print("accuracy:", acc)
+    print('AUC for ROC Curve :%s'%(metrics.auc(fpr, tpr)))
+    plt.title('ROC curve ' + label_name)
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.plot(fpr, tpr)
+    plt.show()
+    print(metrics.classification_report(label, class_pred))
+
+    precision, recall, thresholds = metrics.precision_recall_curve(label, class_pred)
+    plt.title('Precision Recall curve ' + label_name)
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.plot(recall, precision)
+    plt.show()
+    print("AUC for Precision Recall Curve :%s "%(metrics.auc(recall, precision)) )
+
+
+
+def draw_overlap(mask_image, heatmap, slide_image):
+    plt.figure(figsize=(10,10), dpi=100)
+    plt.grid(False)
+    plt.imshow(heatmap)
+    plt.show()
+    plt.figure(figsize=(10,10), dpi=100)
+    plt.imshow(mask_image)
+    plt.imshow(heatmap, cmap='binary', alpha = 0.5) 
+    plt.show()
+    plt.figure(figsize=(10,10), dpi=100)
+    plt.imshow(slide_image)
+    plt.imshow(heatmap, cmap = "Reds", alpha = 0.5) 
+    plt.show()
 
 
 def create_model():
