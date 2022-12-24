@@ -18,8 +18,6 @@ from tensorflow.keras.applications.resnet import ResNet50
 from keras.optimizers import RMSprop
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn import metrics
-# import tensorflow.keras.applications.resnet50
-# from keras.applications.resnet50 import ResNet50
 
 
 from tensorflow import keras
@@ -487,8 +485,8 @@ def create_model():
     """
 
     model1 = InceptionV3(weights='imagenet', include_top=False, input_shape=(299,299, 3))
-    in1 = model1.input
-    out1 = model1.output
+    input1 = model1.input
+    output1 = model1.output
 
     for layer in model1.layers:
         layer.trainable = True
@@ -498,16 +496,15 @@ def create_model():
         layer.trainable = True
     for layer in model2.layers:
         layer._name +=layer.name + str("_2")
+    input2 = model2.input
+    output2 = model2.output
 
-    in2 = model2.input
-    out2 = model2.output
 
-
-    concate= concatenate([out1, out2])
+    concate= concatenate([output1, output2])
     flat = Flatten()(concate)
     dropout1 = Dropout(.5)(flat)
     dense1 = Dense(128, activation='relu')(dropout1)
     final_layer = Dense(1, activation='sigmoid')(dense1)
-    model = Model([in1, in2], final_layer)
+    model = Model([input1, input2], final_layer)
    
     return model 
